@@ -17,18 +17,23 @@ private:
 	}
 
 	/*** constant parser ***/
-	template<std::size_t ex>
-	class Mul10
+	template<typename Type, Type base, Type exp>
+	static constexpr Type Power(void)
 	{
-	public:
-		static constexpr int Go(void)
-		{
-			if constexpr (ex == 0)
-				return 1;
-			else
-				return 10 * Mul10<ex - 1>::Go();
-		}
-	};
+		static_assert(std::is_arithmetic<Type>::value, "Power works only for numeric types");
+		if constexpr (exp == 0)
+			return 1;
+		else
+			return (exp % 2 == 1 ? base : 1) * Power<Type, base * base, exp / 2>();
+	}
+	template<std::size_t ex>
+	static constexpr int Mul10(void)
+	{
+		if constexpr (ex == 0)
+			return 1;
+		else
+			return 10 * Mul10<ex - 1>();
+	}
 	template<typename Type, Type...str>
 	class ScanConst;
 	template<typename Type>
@@ -43,8 +48,8 @@ private:
 			{
 				constexpr auto tup = ScanConst<Type, tail...>::Go();
 				constexpr std::size_t off = std::get<0>(tup);
-				constexpr uint num = std::get<1>(tup);
-				return {1 + off, (first - '0') * Mul10<off>::Go() + num};
+				constexpr std::size_t num = std::get<1>(tup);
+				return {1 + off, (first - '0') * Power<std::size_t, 10, off>() + num};
 			}
 			else
 				return {0, 0};
@@ -57,10 +62,13 @@ private:
 		OR,
 		XOR,
 		AND,
+		SHL,
+		SHR,
 		PLUS,
 		MINUS,
 		MULTIPLY,
 		DIVIDE,
+		POWER,
 
 		ERROR
 	};
@@ -73,18 +81,27 @@ private:
 			return 1;
 		else if constexpr (type == BinaryOperatorType::AND)
 			return 2;
-		else if constexpr (type >= BinaryOperatorType::PLUS && type <= BinaryOperatorType::MINUS)
+		else if constexpr (type >= BinaryOperatorType::SHL && type <= BinaryOperatorType::SHR)
 			return 3;
-		else if constexpr (type >= BinaryOperatorType::MULTIPLY && type <= BinaryOperatorType::DIVIDE)
+		else if constexpr (type >= BinaryOperatorType::PLUS && type <= BinaryOperatorType::MINUS)
 			return 4;
-		else if constexpr (type == BinaryOperatorType::ERROR)
+		else if constexpr (type >= BinaryOperatorType::MULTIPLY && type <= BinaryOperatorType::DIVIDE)
 			return 5;
+		else if constexpr (type == BinaryOperatorType::POWER)
+			return 6;
+		else if constexpr (type == BinaryOperatorType::ERROR)
+			return 7;
 		else
 			static_assert(type <= BinaryOperatorType::ERROR, "Kernel error : no operator in OperatorPriority");
 	}
 	static constexpr int GetOperatorMaxPriority(void)
 	{
 		return OperatorPriority<BinaryOperatorType::ERROR>();
+	}
+	template<int priority>
+	static constexpr bool IsRightAssoc(void)
+	{
+		return priority == OperatorPriority<BinaryOperatorType::POWER>();
 	}
 	template<BinaryOperatorType type, int left, int right>
 	static constexpr int ApplyOperator(void)
@@ -95,6 +112,10 @@ private:
 			return left ^ right;
 		else if constexpr (type == BinaryOperatorType::AND)
 			return left & right;
+		else if constexpr (type == BinaryOperatorType::SHL)
+			return left << right;
+		else if constexpr (type == BinaryOperatorType::SHR)
+			return left >> right;
 		else if constexpr (type == BinaryOperatorType::PLUS)
 			return left + right;
 		else if constexpr (type == BinaryOperatorType::MINUS)
@@ -103,8 +124,10 @@ private:
 			return left * right;
 		else if constexpr (type == BinaryOperatorType::DIVIDE)
 			return left / right;
+		else if constexpr (type == BinaryOperatorType::POWER)
+			return Power<int, left, right>();
 		else
-			static_assert(type <= BinaryOperatorType::DIVIDE, "Kernel error : no operator in ApplyOperator");
+			static_assert(type < BinaryOperatorType::ERROR, "Kernel error : no operator in ApplyOperator");
 	}
 
 	template<typename RetType, template<typename Type1, Type1 ...args> typename Func, typename Type, Type ...args>
@@ -136,7 +159,7 @@ private:
 	template<typename Type, Type...str>
 	class ScanBinary;
 	template<typename Type>
-	class ScanBinary<Type> { public: static constexpr std::tuple<std::size_t, BinaryOperatorType> Go(void) { return {0, BinaryOperatorType::PLUS}; } };
+	class ScanBinary<Type> { public: static constexpr std::tuple<std::size_t, BinaryOperatorType> Go(void) { return {0, BinaryOperatorType::ERROR}; } };
 	template<typename Type, Type first, Type ...tail>
 	class ScanBinary<Type, first, tail...>
 	{
@@ -151,12 +174,25 @@ private:
 				return {1, BinaryOperatorType::XOR};
 			case '&':
 				return {1, BinaryOperatorType::AND};
+			case '>':
+				if constexpr (GetShifted<0, Type, tail...>::Go() == '>')
+					return {2, BinaryOperatorType::SHR};
+				else
+					return {0, BinaryOperatorType::ERROR};
+			case '<':
+				if constexpr (GetShifted<0, Type, tail...>::Go() == '<')
+					return {2, BinaryOperatorType::SHL};
+				else
+					return {0, BinaryOperatorType::ERROR};
 			case '+':
 				return {1, BinaryOperatorType::PLUS};
 			case '-':
 				return {1, BinaryOperatorType::MINUS};
 			case '*':
-				return {1, BinaryOperatorType::MULTIPLY};
+				if constexpr (GetShifted<0, Type, tail...>::Go() == '*')
+					return {2, BinaryOperatorType::POWER};
+				else
+					return {1, BinaryOperatorType::MULTIPLY};
 			case '/':
 				return {1, BinaryOperatorType::DIVIDE};
 			default:
@@ -165,13 +201,13 @@ private:
 		}
 	};
 	/*** Recursive descent parser ***/
-	template<uint shift, typename Type, Type ...args>
+	template<std::size_t shift, typename Type, Type ...args>
 	class GetShifted
 	{
 	public:
 		static constexpr char Go(void) { return 0; }
 	};
-	template<uint shift, typename Type, Type first, Type ...args>
+	template<std::size_t shift, typename Type, Type first, Type ...args>
 	class GetShifted<shift, Type, first, args...>
 	{
 	public:
@@ -218,7 +254,7 @@ private:
 			return ScanConst<Type, first, tail...>::Go();
 		}
 	};
-	template<uint depth, typename Type, Type ...tail>
+	template<std::size_t depth, typename Type, Type ...tail>
 	class RecParse
 	{
 	public:
@@ -226,23 +262,34 @@ private:
 		static constexpr std::tuple<std::size_t, int> GoL()
 		{
 			static_assert(depth != GetOperatorMaxPriority(), "Kernel error : unexpected GoL");
-			constexpr auto op = SkipWS<std::tuple<uint, BinaryOperatorType>, ScanBinary, Type, tail...>::Go();
+			constexpr auto op = SkipWS<std::tuple<std::size_t, BinaryOperatorType>, ScanBinary, Type, tail...>::Go();
 			if constexpr (std::get<0>(op) == 0 || std::get<1>(op) == BinaryOperatorType::ERROR || OperatorPriority<std::get<1>(op)>() != depth)
 				return {0, left};
 			else
 			{
-				constexpr auto right = SkipRec<std::get<0>(op), depth + 1, Type, tail...>::Go();
-				static_assert(std::get<0>(right) != 0 || CheckEnd<std::get<0>(op), Type, tail...>::Go(), "Unexpected end of expression. value expected.");
-				constexpr uint currentoff = std::get<0>(op) + std::get<0>(right);
-				constexpr auto ret = SkipRec<currentoff, depth, Type, tail...>::template GoL<ApplyOperator<std::get<1>(op), left, std::get<1>(right)>()>();
-				return {currentoff + std::get<0>(ret), std::get<1>(ret)};
+				if constexpr (IsRightAssoc<depth>())
+				{
+					constexpr auto right = SkipRec<std::get<0>(op), depth, Type, tail...>::Go();
+					static_assert(std::get<0>(right) != 0 || CheckEnd<std::get<0>(op), Type, tail...>::Go(), "Unexpected end of expression. value expected.");
+					constexpr std::size_t currentoff = std::get<0>(op) + std::get<0>(right);
+					constexpr auto ret = SkipRec<currentoff, depth, Type, tail...>::template GoL<ApplyOperator<std::get<1>(op), left, std::get<1>(right)>()>();
+					return {currentoff + std::get<0>(ret), std::get<1>(ret)};
+				}
+				else
+				{
+					constexpr auto right = SkipRec<std::get<0>(op), depth + 1, Type, tail...>::Go();
+					static_assert(std::get<0>(right) != 0 || CheckEnd<std::get<0>(op), Type, tail...>::Go(), "Unexpected end of expression. value expected.");
+					constexpr std::size_t currentoff = std::get<0>(op) + std::get<0>(right);
+					constexpr auto ret = SkipRec<currentoff, depth, Type, tail...>::template GoL<ApplyOperator<std::get<1>(op), left, std::get<1>(right)>()>();
+					return {currentoff + std::get<0>(ret), std::get<1>(ret)};
+				}
 			}
 		}
 		static constexpr std::tuple<std::size_t, int> Go(void)
 		{
 			if constexpr (depth == GetOperatorMaxPriority())
 			{
-				constexpr auto ret = SkipWS<std::tuple<uint, int>, ScanValue, Type, tail...>::Go();
+				constexpr auto ret = SkipWS<std::tuple<std::size_t, int>, ScanValue, Type, tail...>::Go();
 				static_assert(std::get<0>(ret) != 0, "Constant expected");
 				return ret;
 			}
@@ -255,7 +302,7 @@ private:
 			}
 		}
 	};
-	template<uint depth, typename Type>
+	template<std::size_t depth, typename Type>
 	class RecParse<depth, Type>
 	{
 	public:
@@ -269,9 +316,9 @@ private:
 			return {0, 0};
 		}
 	};
-	template<uint skip, uint depth, typename Type, Type ...tail>
+	template<std::size_t skip, std::size_t depth, typename Type, Type ...tail>
 	class SkipRec;
-	template<uint skip, uint depth, typename Type, Type first, Type ...tail>
+	template<std::size_t skip, std::size_t depth, typename Type, Type first, Type ...tail>
 	class SkipRec<skip, depth, Type, first, tail...>
 	{
 	public:
@@ -291,7 +338,7 @@ private:
 				return SkipRec<skip - 1, depth, Type, tail...>::template GoL<left>();
 		}
 	};
-	template<uint depth, typename Type>
+	template<std::size_t depth, typename Type>
 	class SkipRec<0, depth, Type>
 	{
 	public:
@@ -307,9 +354,9 @@ private:
 	};
 
 	// check spaces in the end of the expr
-	template<uint skip, typename Type, Type ...args>
+	template<std::size_t skip, typename Type, Type ...args>
 	class CheckEnd;
-	template<uint skip, typename Type, Type first, Type ...args>
+	template<std::size_t skip, typename Type, Type first, Type ...args>
 	class CheckEnd<skip, Type, first, args...>
 	{
 	public:

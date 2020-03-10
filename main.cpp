@@ -4,6 +4,6 @@
 
 int main(void)
 {
-	std::cout << "(1 + 2) * 3 ^ 7"_calc << std::endl;
+	std::cout << "2 ** 2 ** 3 + 1"_calc << std::endl;
 	return 0;
 }
